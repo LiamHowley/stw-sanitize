@@ -1,0 +1,129 @@
+#+LATEX_CLASS: stw-documentation
+#+TITLE: STW-Sanitize
+#+AUTHOR: Liam Howley
+
+#+OPTIONS: toc
+
+** Introduction
+
+STW-Sanitize is a trivial library for sanitizing user input. In appearance it is very similar to CL-Sanitize, but the parser used is STW-XML-PARSE, thus avoiding the need for foreign function interface calls. Similar to STW-XML-PARSE, the Meta Object Protocol is used to enable type dispatching on parsed inputs. Thus each whitelist is merely a class definition, and each slot represents a whitelisted element. As such each whitelist can inherit from other whitelists allowing for progressively layered sanitization schemes. 
+
+Note: As the API for STW-SANITIZE is quite limited it can be considered stable, however, it is subject to review and the usual caution applies.
+
+** Defining a Whitelist Class
+
+To define a class of type WHITELIST:
+
+#+BEGIN_SRC lisp
+
+(define-whitelist restricted
+  ()
+  (b em i strong u small strike sub sup))
+  
+=> #<WHITELIST SANITIZE:RESTRICTED>
+
+#+END_SRC
+
+*** Cached rules
+
+If we inspect the above class, we see a slot named index. This is a cached store for each slot of type WHITELIST-RULE.
+
+#+BEGIN_SRC lisp
+
+#<HASH-TABLE {1004463913}>
+--------------------
+Count: 9
+Size: 9
+Test: EQUAL
+Rehash size: 1.5
+Rehash threshold: 1.0
+[clear hashtable]
+Contents: 
+"b" = #<WHITELIST-RULE SANITIZE::B> [remove entry]
+"em" = #<WHITELIST-RULE SANITIZE::EM> [remove entry]
+"i" = #<WHITELIST-RULE SANITIZE::I> [remove entry]
+"small" = #<WHITELIST-RULE SANITIZE::SMALL> [remove entry]
+"strike" = #<WHITELIST-RULE SANITIZE::STRIKE> [remove entry]
+"strong" = #<WHITELIST-RULE SANITIZE::STRONG> [remove entry]
+"sub" = #<WHITELIST-RULE SANITIZE::SUB> [remove entry]
+"sup" = #<WHITELIST-RULE SANITIZE::SUP> [remove entry]
+"u" = #<WHITELIST-RULE SANITIZE::U> [remove entry]
+
+#+END_SRC
+
+*** Inheriting
+
+As each whitelist is a class inheriting from another whitelist is trivial.
+  
+#+BEGIN_SRC lisp
+
+(define-whitelist basic
+  (restricted)
+  ((a          :attributes (("href" :protocols ("ftp" "http" "https" "mailto" "relative")))
+	             :add-attributes (("rel" . "nofollow")))
+   (abbr       :attributes ("title"))
+   (blockquote :attributes (("cite" :protocols ("http" "https" "relative"))))
+   (dfn        :attributes ("title"))
+   (q          :attributes (("cite" :protocols ("http" "https" "relative"))))
+   (html-time  :element "time" :attributes ("datetime"))
+   br cite code dd dl dt kbd li mark ol p pre s samp ul var))
+
+#+END_SRC
+
+** Sanitizing
+
+There are four predefined whitelists for convenience: TEXT-ONLY, RESTRICTED, BASIC, AND RELAXED.  To sanitize a string:
+
+#+BEGIN_SRC lisp
+
+(sanitize "<My contrived <script>javascript:string</script> with undesired or malformed elements>" (find-class 'basic) :mode :strict)
+
+=> "&lt;My contrived javascript:string with undesired or malformed elements&gt;"
+
+#+END_SRC
+
+*** Modes
+
+STW-XML-PARSE has three modes of parsing. The first :SILENT, the most fault tolerant, parses until the end of the string without raising errors relating to the composition of the string. :WARN, behaves in a similar manner to :SILENT, but is verbose and prints to *STANDARD-OUTPUT* when an error is encountered. *STRICT* results in errors being invoked, and makes best effort to provide restarts for use. STW-SANITIZE, uses :STRICT by default, and employs default handlers when errors are invoked. To override these handlers, see the keyword arguments, :ON-CLASS-NOT-FOUND, :ON-STRAY-CLOSING-TAG, :ON-TAG-MISMATCH.
+
+*** Contrived Example
+
+#+BEGIN_SRC lisp
+
+(sanitize "<My contrived <script>javascript:string</script> with undesired or malformed elements>" (find-class 'basic) :mode :silent)
+
+=> "javascript:string with undesired or malformed elements&gt;"
+
+#+END_SRC
+
+In the above example, the substring "<My contrived " is parsed with the keyword argument :MODE set to :SILENT, so that /<My>/ is parsed as an element with the attribute /<contrived>/.  As these are not whitelisted they are removed. However, by default, :MODE is set to :STRICT, so that the parser STW-XML-PARSE calls a CLASS-NOT-FOUND-ERROR when an unknown element is encountered. SANITIZE handles this error by invoking the restart function ASSIGN-TEXT-NODE. This ensures that unknown elements such as /<My>/ with an attribute /<contrived>/ are treated as text. 
+
+To invoke a different restart function, pass a function that accepts a single condition argument to the :ON-CLASS-NOT-FOUND keyword argument when invoking SANITIZE.
+
+#+BEGIN_SRC lisp
+
+(sanitize "<My contrived <script>javascript:string</script> with undesired or malformed elements>" (find-class 'basic) :mode :strict)
+
+=> "&lt;My contrived javascript:string with undesired or malformed elements&gt;"
+
+#+END_SRC
+
+*** WARNING: It is recommended that the parsing mode be left at :STRICT, specifically so when attributes with URI's are whitelisted. In most cases with mode set to :SILENT, the sanitizer removes any offending attempts at Javascript injection, however, there are edge cases. In tests, out of 20 attempts at Javascript injection one made it through, albeit in a slightly modified form:
+
+#+BEGIN_SRC lisp
+
+(sanitize "<img src=\" &#14;  javascript:alert('XSS');\">" :mode :silent)
+
+=> "<img src='   javascript:alert(&#39;XSS&#39;);' />"
+
+#+END_SRC
+
+However, the default of :STRICT screens appropriately.
+
+#+BEGIN_SRC lisp
+
+(sanitize "<img src=\" &#14;  javascript:alert('XSS');\">")
+
+=> "<img />"
+
+#+END_SRC
